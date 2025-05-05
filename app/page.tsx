@@ -1,103 +1,182 @@
-import Image from "next/image";
+'use client';
+import { useState, useRef, useEffect } from 'react';
+import { saveFeedback } from '../feedbackStore';
+import Image from 'next/image';
 
 export default function Home() {
-  return (
-    <div className="grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20 font-[family-name:var(--font-geist-sans)]">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="list-inside list-decimal text-sm/6 text-center sm:text-left font-[family-name:var(--font-geist-mono)]">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] px-1 py-0.5 rounded font-[family-name:var(--font-geist-mono)] font-semibold">
-              app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+  const [recording, setRecording] = useState(false);
+  const [recorder, setRecorder] = useState<MediaRecorder | null>(null);
+  const [transcript, setTranscript] = useState('');
+  const [aiReply, setAiReply] = useState('');
+  const [spinner, setSpinner] = useState(false);
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
-        </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
+  const chatEndRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [transcript, aiReply]);
+
+  const startMic = async () => {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const audioCtx = new AudioContext();
+    const source = audioCtx.createMediaStreamSource(stream);
+    const analyser = audioCtx.createAnalyser();
+    source.connect(analyser);
+
+    const newRec = new MediaRecorder(stream);
+    const chunks: BlobPart[] = [];
+
+    newRec.ondataavailable = e => chunks.push(e.data);
+
+    newRec.onstop = () => {
+      const blob = new Blob(chunks, { type: 'audio/webm' });
+      sendToWhisper(blob);
+    };
+
+    newRec.start();
+    setRecorder(newRec);
+    setRecording(true);
+
+    const bufferLength = analyser.fftSize;
+    const dataArray = new Uint8Array(bufferLength);
+
+    let silenceStart: number | null = null;
+
+    const silenceThreshold = 5;
+    const silenceDuration = 3000;
+
+    const checkSilence = () => {
+      analyser.getByteTimeDomainData(dataArray);
+      const isSilent = dataArray.every(value => Math.abs(value - 128) < silenceThreshold);
+
+      const now = Date.now();
+
+      if (isSilent) {
+        if (silenceStart === null) silenceStart = now;
+        if (now - silenceStart > silenceDuration) {
+          newRec.stop();
+          setRecording(false);
+          stream.getTracks().forEach(track => track.stop());
+        } else {
+          requestAnimationFrame(checkSilence);
+        }
+      } else {
+        silenceStart = null;
+        requestAnimationFrame(checkSilence);
+      }
+    };
+
+    requestAnimationFrame(checkSilence);
+  };
+
+  const sendToWhisper = async (blob: Blob) => {
+    setSpinner(true);
+    const res = await fetch('/api/transcribe', {
+      method: 'POST',
+      body: blob,
+    });
+    const { text } = await res.json();
+    setTranscript(text);
+    getChatGPTReply(text);
+  };
+
+  const getChatGPTReply = async (input: string) => {
+    const res = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt: input })
+    });
+
+    const data = await res.json();
+    const reply = data.reply;
+    setAiReply(reply);
+    playVoice(reply);
+    saveFeedback(input, reply);
+    setSpinner(false);
+  };
+
+  const playVoice = async (text: string) => {
+    const res = await fetch('/api/tts', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text })
+    });
+
+    const blob = await res.blob();
+    const audioBlob = new Blob([blob], { type: 'audio/mpeg' });
+    const url = URL.createObjectURL(audioBlob);
+    const audio = new Audio(url);
+    audio.play().catch(err => console.error("❌ Playback error:", err));
+  };
+
+  return (
+    <div
+      style={{
+        backgroundImage: "url('/soap-bg.jpg')",
+        backgroundSize: 'cover',
+        backgroundPosition: 'center',
+        minHeight: '100vh',
+        padding: '2rem',
+        color: 'white',
+        fontFamily: 'Aura, sans-serif',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        justifyContent: 'center',
+        textAlign: 'center'
+      }}
+    >
+      <div style={{ position: 'absolute', top: 20, left: 20 }}>
+        <Image src="/shimoda-logo.png" alt="Shimoda Logo" width={140} height={40} />
+      </div>
+
+      {/* Info bubble */}
+      <div style={{
+        backgroundColor: 'rgba(0, 0, 0, 0.6)',
+        padding: '2rem',
+        borderRadius: '8px',
+        maxWidth: '700px',
+        width: '100%',
+        marginBottom: '2rem'
+      }}>
+        <h2 style={{ fontSize: '40px', fontWeight: 'bold', marginBottom: '1rem' }}>
+          What did you think of our product?
+        </h2>
+
+        <p style={{ fontSize: '20px', fontWeight: 'bold', marginBottom: '2rem' }}>
+          We’ve added audio-powered feedback to our site to make it as easy as possible for you to share your thoughts with us! Simply click the button below, and tell us what you thought. Our response bot will confirm that we’ve received your feedback.
+        </p>
+
+        <button
+          onClick={startMic}
+          disabled={recording}
+          style={{
+            background: 'white',
+            color: 'black',
+            fontWeight: 'bold',
+            fontSize: '20px',
+            padding: '0.7rem 1.5rem',
+            borderRadius: '5px',
+            cursor: 'pointer'
+          }}
         >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+          {recording ? 'Listening…' : 'Click Here'}
+        </button>
+      </div>
+
+      {/* Feedback + AI reply bubble */}
+      <div style={{
+        backgroundColor: 'rgba(0, 0, 0, 0.6)',
+        padding: '1rem',
+        borderRadius: '8px',
+        maxWidth: '700px',
+        width: '100%'
+      }}>
+        <p style={{ fontSize: '22px', fontWeight: 'bold' }}><strong>Your Feedback:</strong> {transcript}</p>
+        <div style={{ margin: '1rem 0' }} />
+        <p style={{ fontSize: '22px', fontWeight: 'bold' }}><strong>Shimoda:</strong> {aiReply}</p>
+      </div>
+
+      <div ref={chatEndRef} />
     </div>
   );
 }
