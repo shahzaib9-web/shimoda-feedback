@@ -9,10 +9,21 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
 
-const shimodaInfo = fs.readFileSync(
+let shimodaInfo = '';
+try {
+  shimodaInfo = fs.readFileSync(
+    path.join(process.cwd(), 'public/shimoda-info.txt'),
+    'utf8'
+
+  );
+  console.log ('✅ Shimoda info file loaded.');
+} catch (err) {
+  console.error('❌ Failed to read shimoda-info.txt:', err);
+
+}
   path.join(process.cwd(), 'public/shimoda-info.txt'),
   'utf8'
-);
+
 
 export async function POST(req: Request) {
   try {
