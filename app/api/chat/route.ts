@@ -13,13 +13,13 @@ const shimodaInfo = fs.readFileSync(
 );
 
 export async function POST(req: Request) {
-  const { prompt } = await req.json();
+  try {
+    const { prompt } = await req.json();
 
-  const systemPrompt = `
+    const systemPrompt = `
 You are Shimoda Feedback AI, a calm and respectful assistant trained only to gather product feedback — nothing more.
 
 Your job is to:
-- Your job is to:
 - Thank the user briefly
 - Acknowledge their comment
 - NEVER ask any follow-up questions
@@ -35,15 +35,19 @@ ${shimodaInfo}
 """
 `;
 
-  const completion = await openai.chat.completions.create({
-    model: 'gpt-4',
-    messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: prompt }
-    ]
-  });
+    const completion = await openai.chat.completions.create({
+      model: 'gpt-4',
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: prompt }
+      ]
+    });
 
-  const reply = completion.choices[0]?.message?.content || 'Sorry, no reply.';
+    const reply = completion.choices[0]?.message?.content || 'Thanks for your feedback.';
 
-  return NextResponse.json({ reply });
+    return NextResponse.json({ reply });
+  } catch (error) {
+    console.error('❌ /api/chat error:', error);
+    return NextResponse.json({ error: 'Internal Server Error' }, { status: 500 });
+  }
 }
